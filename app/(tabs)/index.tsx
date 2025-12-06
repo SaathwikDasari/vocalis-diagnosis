@@ -1,51 +1,133 @@
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
+import { Audio } from 'expo-av'; // Import Audio Library
 import React, { useState } from 'react';
-import { SafeAreaView, ScrollView, StyleSheet, TouchableOpacity } from 'react-native';
+import { Alert, SafeAreaView, ScrollView, StyleSheet, TouchableOpacity } from 'react-native';
 
-// Define the three core states of the application
+// ---------------------------------------------------------
+// 🔴 REPLACE THIS WITH YOUR LAPTOP'S IP ADDRESS
+// Keep the :5000/predict part.
+// Example: 'http://192.168.29.145:5000/predict'
+const BACKEND_URL = 'http://10.153.133.95:5000/predict'; 
+// ---------------------------------------------------------
+
 type AppState = 'IDLE' | 'RECORDING' | 'PROCESSING';
 
 export default function HomeScreen() {
   const [appState, setAppState] = useState<AppState>('IDLE');
   const [predictionResult, setPredictionResult] = useState<number | null>(null);
   const [statusMessage, setStatusMessage] = useState('Press the button to begin voice screening.');
+  
+  // Audio State
+  const [recording, setRecording] = useState<Audio.Recording | undefined>(undefined);
+  const [permissionResponse, requestPermission] = Audio.usePermissions();
 
-  // --- Handlers (Mocked for UI) ---
-  const handleRecordPress = () => {
-    if (appState === 'IDLE') {
-      // Start Recording Logic
+  // --- 1. START RECORDING ---
+  async function startRecording() {
+    try {
+      // Check permissions
+      if (permissionResponse?.status !== 'granted') {
+        console.log('Requesting permission..');
+        await requestPermission();
+      }
+
+      // Configure audio session
+      await Audio.setAudioModeAsync({
+        allowsRecordingIOS: true,
+        playsInSilentModeIOS: true,
+      }); 
+
+      console.log('Starting recording..');
       setAppState('RECORDING');
-      setStatusMessage('Recording voice sample... please say "Aaaah".');
-      setPredictionResult(null);
+      setStatusMessage('Recording... Say "Aaaah" steadily.');
 
-      // --- MOCK: Simulate recording/processing time (3 seconds) ---
-      setTimeout(() => {
-        setAppState('PROCESSING');
-        setStatusMessage('Analyzing acoustic biomarkers (Jitter/Shimmer)...');
-      }, 3000);
+      // Create recording object
+      const { recording } = await Audio.Recording.createAsync( 
+        Audio.RecordingOptionsPresets.HIGH_QUALITY
+      );
+      setRecording(recording);
+      console.log('Recording started');
+    } catch (err) {
+      console.error('Failed to start recording', err);
+      setStatusMessage('Error: Could not access microphone.');
+      setAppState('IDLE');
+    }
+  }
 
-      // --- MOCK: Simulate result delivery (5 seconds total) ---
-      setTimeout(() => {
+  // --- 2. STOP & UPLOAD ---
+  async function stopRecording() {
+    console.log('Stopping recording..');
+    setRecording(undefined);
+    await recording?.stopAndUnloadAsync();
+    await Audio.setAudioModeAsync({ allowsRecordingIOS: false });
+    
+    const uri = recording?.getURI(); 
+    console.log('Recording stopped and stored at', uri);
+
+    if (uri) {
+      uploadAudio(uri);
+    }
+  }
+
+  // --- 3. SEND TO PYTHON BACKEND ---
+  async function uploadAudio(uri: string) {
+    setAppState('PROCESSING');
+    setStatusMessage('Uploading to VODA Engine...');
+
+    const formData = new FormData();
+    // React Native FormData expects an object with uri, name, and type
+    formData.append('audio', {
+      uri: uri,
+      name: 'voice_sample.m4a',
+      type: 'audio/m4a',
+    } as any);
+
+    try {
+      const response = await fetch(BACKEND_URL, {
+        method: 'POST',
+        body: formData,
+        headers: {
+          'Content-Type': 'multipart/form-data',
+        },
+      });
+
+      const result = await response.json();
+      console.log('Server Response:', result);
+
+      if (result.error) {
+        Alert.alert("Server Error", result.error);
         setAppState('IDLE');
-        // Mock a 15% risk result (e.g., 85% healthy score)
-        setPredictionResult(85); 
-        setStatusMessage('Analysis Complete. Scroll down for results.');
-      }, 5000);
+        return;
+      }
 
+      // Update UI with Result
+      // The backend returns 'risk_score' (Probability of Parkinson's).
+      // We display 'Health Score' (100 - risk).
+      const healthScore = 100 - result.risk_score;
+      setPredictionResult(Math.round(healthScore));
+      setStatusMessage('Analysis Complete.');
+      setAppState('IDLE');
+
+    } catch (error) {
+      console.error('Network Request Failed:', error);
+      Alert.alert("Connection Error", "Is your laptop IP correct? Are both devices on the same Wi-Fi?");
+      setStatusMessage('Connection Failed.');
+      setAppState('IDLE');
+    }
+  }
+
+  // --- UI Handler ---
+  const handlePress = () => {
+    if (appState === 'IDLE') {
+      startRecording();
     } else if (appState === 'RECORDING') {
-      // Stop Recording Logic
-      // In a real app, this would trigger the actual stop/upload/processing
-      // For this UI, we let the timeout finish, but a user could stop early.
-      setStatusMessage('Please wait for analysis to complete...');
+      stopRecording();
     }
   };
-  
-  // --- UI Logic Helpers ---
-  const buttonText = appState === 'IDLE' ? 'START SCREENING' : (appState === 'RECORDING' ? 'STOP RECORDING' : 'ANALYZING...');
+
+  // --- Dynamic Styles ---
+  const buttonText = appState === 'IDLE' ? 'START SCREENING' : (appState === 'RECORDING' ? 'STOP & ANALYZE' : 'PROCESSING...');
   const buttonStyle = appState === 'RECORDING' ? styles.recordButtonActive : styles.recordButton;
-  
-  // Emojis for status feedback
   const titleEmoji = appState === 'IDLE' ? '🟢' : (appState === 'RECORDING' ? '🔴' : '🟡');
 
   return (
@@ -53,19 +135,17 @@ export default function HomeScreen() {
       <ScrollView contentContainerStyle={styles.scrollContent}>
 
         <ThemedText type='title' style={styles.appTitle}>
-          {titleEmoji} VODA: Vocalis Diagnostic Assistant
+          {titleEmoji} VODA
         </ThemedText>
         
-        {/* --- 1. Status Display Area --- */}
         <ThemedView style={styles.statusBox}>
-          <ThemedText type='subtitle'>{statusMessage}</ThemedText>
+          <ThemedText type='subtitle' style={{textAlign: 'center'}}>{statusMessage}</ThemedText>
         </ThemedView>
 
-        {/* --- 2. Recording Button --- */}
         <TouchableOpacity 
           style={buttonStyle}
-          onPress={handleRecordPress}
-          disabled={appState === 'PROCESSING'} // Disable while processing
+          onPress={handlePress}
+          disabled={appState === 'PROCESSING'}
         >
           <ThemedText type='defaultSemiBold' style={styles.buttonText}>
             {buttonText}
@@ -76,21 +156,20 @@ export default function HomeScreen() {
           Ensure you are in a quiet environment.
         </ThemedText>
 
-        {/* --- 3. Prediction Result Area --- */}
         {predictionResult !== null && (
           <ThemedView style={styles.resultBox}>
             <ThemedText type='subtitle'>
-              ✅ Screening Complete!
+              ✅ Screening Complete
             </ThemedText>
             <ThemedText type='title' style={styles.resultScore}>
               {predictionResult}%
             </ThemedText>
             <ThemedText type='default'>
-              Confidence Score (Healthy Signal Integrity)
+              Vocal Health Score
             </ThemedText>
-            {predictionResult < 90 && (
+            {predictionResult < 85 && (
                 <ThemedText type='defaultSemiBold' style={styles.riskWarning}>
-                    *Low score indicates risk. Consult a specialist.
+                    ⚠️ Biomarkers detected. Consult a specialist.
                 </ThemedText>
             )}
           </ThemedView>
@@ -101,78 +180,16 @@ export default function HomeScreen() {
   );
 }
 
-// --- Styling ---
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    padding: 20,
-  },
-  scrollContent: {
-    padding: 25,
-    alignItems: 'center',
-  },
-  appTitle: {
-    marginBottom: 30,
-    textAlign: 'center',
-    fontSize: 24,
-  },
-  statusBox: {
-    padding: 15,
-    borderRadius: 10,
-    marginBottom: 40,
-    backgroundColor: '#3f51b520', // Light blue background for status
-    width: '100%',
-    alignItems: 'center',
-  },
-  recordButton: {
-    backgroundColor: '#4CAF50', // Green for Idle/Start
-    paddingVertical: 20,
-    paddingHorizontal: 40,
-    borderRadius: 50,
-    marginBottom: 15,
-    width: 250,
-    alignItems: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 5,
-    elevation: 8,
-  },
-  recordButtonActive: {
-    backgroundColor: '#F44336', // Red for Recording
-    paddingVertical: 20,
-    paddingHorizontal: 40,
-    borderRadius: 50,
-    marginBottom: 15,
-    width: 250,
-    alignItems: 'center',
-    // Pulsating effect visual idea: change scale in a real app animation
-  },
-  buttonText: {
-    color: 'white',
-    fontSize: 18,
-  },
-  guidanceText: {
-    color: '#888',
-    marginBottom: 50,
-  },
-  resultBox: {
-    marginTop: 20,
-    padding: 25,
-    borderRadius: 15,
-    borderWidth: 1,
-    borderColor: '#3f51b5',
-    alignItems: 'center',
-    width: '100%',
-  },
-  resultScore: {
-    fontSize: 60,
-    color: '#3f51b5',
-    marginVertical: 10,
-  },
-  riskWarning: {
-    color: '#D32F2F',
-    marginTop: 10,
-    textAlign: 'center',
-  }
+  container: { flex: 1, backgroundColor: '#fff' },
+  scrollContent: { padding: 25, alignItems: 'center', paddingTop: 60 },
+  appTitle: { marginBottom: 30, textAlign: 'center', fontSize: 28 },
+  statusBox: { padding: 15, borderRadius: 10, marginBottom: 40, backgroundColor: '#E3F2FD', width: '100%', alignItems: 'center' },
+  recordButton: { backgroundColor: '#4CAF50', paddingVertical: 20, borderRadius: 50, marginBottom: 15, width: 250, alignItems: 'center', elevation: 5 },
+  recordButtonActive: { backgroundColor: '#F44336', paddingVertical: 20, borderRadius: 50, marginBottom: 15, width: 250, alignItems: 'center', elevation: 5 },
+  buttonText: { color: 'white', fontSize: 18, fontWeight: 'bold' },
+  guidanceText: { color: '#888', marginBottom: 30 },
+  resultBox: { marginTop: 10, padding: 25, borderRadius: 15, borderWidth: 2, borderColor: '#3f51b5', alignItems: 'center', width: '100%', backgroundColor: '#FAFAFA' },
+  resultScore: { fontSize: 60, color: '#3f51b5', marginVertical: 10 },
+  riskWarning: { color: '#D32F2F', marginTop: 15, textAlign: 'center' }
 });
