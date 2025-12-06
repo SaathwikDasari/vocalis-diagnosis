@@ -77,7 +77,6 @@ def predict():
             prediction = 0 # Healthy
             risk_score = 0.10
 
-        # Clean up
         os.remove(filename)
         os.remove(wav_filename)
         
@@ -97,5 +96,4 @@ def predict():
         return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
-    # Host 0.0.0.0 allows phones on the same Wi-Fi to connect
     app.run(host='0.0.0.0', port=5000, debug=True)
